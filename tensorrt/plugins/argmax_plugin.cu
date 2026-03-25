@@ -129,14 +129,26 @@ bool ArgMaxPlugin::supportsFormatCombination(
     ss << "ArgMaxPlugin accepts only two input, but here pos is " << pos;
     CHECK(pos < 2, ss.str());
 
-    bool typeOk = inOut[0].desc.type == DataType::kFLOAT;
-    typeOk = typeOk || inOut[0].desc.type == DataType::kHALF;
-    typeOk = typeOk || inOut[0].desc.type == DataType::kBF16; 
-    typeOk = typeOk || inOut[0].desc.type == DataType::kINT8; 
-    // here support int8, and enqueue() will recieve int8 input
-    // or it will drop back to float/half to call enqueue()
+    // pos=1 is the output tensor: always INT32 kLINEAR
+    if (pos == 1) {
+        return inOut[1].desc.type == DataType::kINT32
+            && inOut[1].desc.format == PluginFormat::kLINEAR;
+    }
 
-    bool formatOK = inOut[0].desc.format == PluginFormat::kLINEAR;
+    // pos=0 is the input tensor
+    auto typ = inOut[0].desc.type;
+    auto fmt = inOut[0].desc.format;
+
+    bool typeOk = typ == DataType::kFLOAT
+               || typ == DataType::kHALF
+               || typ == DataType::kBF16
+               || typ == DataType::kINT8;
+
+    bool formatOK = fmt == PluginFormat::kLINEAR
+                 || fmt == PluginFormat::kHWC
+                 || (fmt == PluginFormat::kHWC4 && typ == DataType::kINT8)
+                 || (fmt == PluginFormat::kHWC4 && typ == DataType::kFLOAT)
+                 || (fmt == PluginFormat::kHWC8 && typ == DataType::kHALF);
 
     return formatOK && typeOk;
 }
@@ -170,7 +182,7 @@ int32_t ArgMaxPlugin::getOutputShapes(DimsExprs const* inputs, int32_t nbInputs,
 size_t ArgMaxPlugin::getWorkspaceSize(DynamicPluginTensorDesc const* inputs, int32_t nbInputs,
     DynamicPluginTensorDesc const* outputs, int32_t nbOutputs) const noexcept 
 {
-    return sizeof(mAxis);
+    return 0;
 }
 
 
@@ -200,29 +212,38 @@ int32_t ArgMaxPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDes
 
     // cout << "type is: " << static_cast<int32_t>(type) << endl;
 
+    auto fmt = inputDesc[0].format;
+    bool is_nhwc  = (fmt == nvinfer1::TensorFormat::kHWC);
+    bool is_nhwc4 = (fmt == nvinfer1::TensorFormat::kHWC4);
+    bool is_nhwc8 = (fmt == nvinfer1::TensorFormat::kHWC8);
+    int32_t n_spatial = n_size * m_size; // N * H * W, used by NHWC kernels
+
     if (type == nvinfer1::DataType::kFLOAT) {
         const float* ptr_inp = static_cast<const float*>(inputs[0]);
         int32_t* ptr_out = static_cast<int32_t*>(outputs[0]);
-        argMaxFunc<float>(ptr_inp, ptr_out, n_size, dimsize, m_size, &stream);
-        // cout << "type is: fp32" << endl;
+        if (is_nhwc4)     argMaxHWC4FP32Func(ptr_inp, ptr_out, n_spatial, dimsize, &stream);
+        else if (is_nhwc) argMaxHWCFunc<float>(ptr_inp, ptr_out, n_spatial, dimsize, &stream);
+        else              argMaxNCHWFunc<float>(ptr_inp, ptr_out, n_size, dimsize, m_size, &stream);
 
     } else if (type == nvinfer1::DataType::kHALF) {
         const __half* ptr_inp = static_cast<const __half*>(inputs[0]);
         int32_t* ptr_out = static_cast<int32_t*>(outputs[0]);
-        argMaxFunc<__half>(ptr_inp, ptr_out, n_size, dimsize, m_size, &stream);
-        // cout << "type is: fp16" << endl;
+        if (is_nhwc8)     argMaxHWC8FP16Func(ptr_inp, ptr_out, n_spatial, dimsize, &stream);
+        else if (is_nhwc) argMaxHWCFunc<__half>(ptr_inp, ptr_out, n_spatial, dimsize, &stream);
+        else              argMaxNCHWFunc<__half>(ptr_inp, ptr_out, n_size, dimsize, m_size, &stream);
 
     } else if (type == nvinfer1::DataType::kBF16) {
-        // cout << "type is: bf16" << endl;
         const __nv_bfloat16* ptr_inp = static_cast<const __nv_bfloat16*>(inputs[0]);
         int32_t* ptr_out = static_cast<int32_t*>(outputs[0]);
-        argMaxFunc<__nv_bfloat16>(ptr_inp, ptr_out, n_size, dimsize, m_size, &stream);
+        if (is_nhwc) argMaxHWCFunc<__nv_bfloat16>(ptr_inp, ptr_out, n_spatial, dimsize, &stream);
+        else         argMaxNCHWFunc<__nv_bfloat16>(ptr_inp, ptr_out, n_size, dimsize, m_size, &stream);
 
     } else if (type == nvinfer1::DataType::kINT8) {
         const int8_t* ptr_inp = static_cast<const int8_t*>(inputs[0]);
         int32_t* ptr_out = static_cast<int32_t*>(outputs[0]);
-        argMaxFunc<int8_t>(ptr_inp, ptr_out, n_size, dimsize, m_size, &stream);
-        // cout << "type is: int8" << endl;
+        if (is_nhwc4)     argMaxHWC4Int8Func(ptr_inp, ptr_out, n_spatial, dimsize, &stream);
+        else if (is_nhwc) argMaxHWCFunc<int8_t>(ptr_inp, ptr_out, n_spatial, dimsize, &stream);
+        else              argMaxNCHWFunc<int8_t>(ptr_inp, ptr_out, n_size, dimsize, m_size, &stream);
 
     } else {
         cout << "type is: other" << endl;
@@ -292,7 +313,7 @@ IPluginV3* ArgMaxPluginCreator::createPlugin(char const* name, PluginFieldCollec
             const string fieldName(fc->fields[i].name);
             if (fieldName == "dim")
             {
-                mAxis = *static_cast<int32_t const*>(fc->fields[i].data);
+                mAxis = *static_cast<int64_t const*>(fc->fields[i].data);
             }
         }
         auto plugin = new ArgMaxPlugin(mAxis);

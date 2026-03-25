@@ -30,7 +30,7 @@ void CHECK(bool success, string msg);
 class Logger: public ILogger {
     public:
         void log(Severity severity, const char* msg) noexcept override {
-            if (severity != Severity::kINFO) {
+            if (severity < Severity::kINFO) {
                 std::cout << msg << std::endl;
             }
         }

@@ -46,7 +46,7 @@ public:
 
         readDataFile(dataFile, dataRoot);
         mSampleSize = std::accumulate(
-                mDims.d, mDims.d + mDims.nbDims, 1, std::multiplies<int64_t>()) * sizeof(float);
+                mDims.d, mDims.d + mDims.nbDims, 1, std::multiplies<int64_t>());
         mData.resize(mSampleSize * mBatchSize);
     }
 
@@ -140,7 +140,7 @@ private:
     Dims3 mDims{};
     std::vector<string> mPaths;
     std::vector<float> mData;
-    int mSampleSize{0};
+    int64_t mSampleSize{0};
 };
 
 

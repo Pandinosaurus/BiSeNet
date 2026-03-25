@@ -101,7 +101,7 @@ void SemanticSegmentTrt::parse_to_engine(string onnx_pth,
     profile->setDimensions(input->getName(), OptProfileSelector::kMAX, dmax);
     config->addOptimizationProfile(profile);
 
-    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 1UL << 32);
+    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 1UL << 34); // 16G
     config->setBuilderOptimizationLevel(5);
 
     if (quant == "fp16") { // fp16
